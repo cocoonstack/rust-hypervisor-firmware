@@ -91,7 +91,7 @@ fn panic(_: &PanicInfo) -> ! {
 }
 
 const VIRTIO_PCI_VENDOR_ID: u16 = 0x1af4;
-const VIRTIO_PCI_BLOCK_DEVICE_ID: u16 = 0x1042;
+const VIRTIO_PCI_BLOCK_DEVICE_IDS: &[u16] = &[0x1042, 0x1001];
 
 #[allow(dead_code)]
 #[derive(Debug)]
@@ -266,10 +266,8 @@ fn main(info: &dyn bootinfo::Info) -> ! {
     let mut next_address = info.pci_bar_memory().map(|m| m.addr);
     let max_address = info.pci_bar_memory().map(|m| m.addr + m.size);
 
-    pci::with_devices(
-        VIRTIO_PCI_VENDOR_ID,
-        VIRTIO_PCI_BLOCK_DEVICE_ID,
-        |mut pci_device| {
+    for &device_id in VIRTIO_PCI_BLOCK_DEVICE_IDS {
+        pci::with_devices(VIRTIO_PCI_VENDOR_ID, device_id, |mut pci_device| {
             pci_device.init();
 
             next_address = pci_device.allocate_bars(next_address);
@@ -280,8 +278,8 @@ fn main(info: &dyn bootinfo::Info) -> ! {
             let mut pci_transport = pci::VirtioPciTransport::new(pci_device);
             let mut device = block::VirtioBlockDevice::new(&mut pci_transport);
             boot_from_device(&mut device, info).is_ok()
-        },
-    );
+        });
+    }
 
     panic!("Unable to boot from any virtio-blk device")
 }

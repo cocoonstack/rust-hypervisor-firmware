@@ -675,6 +675,57 @@ mod tests {
         mod x86_64 {
             use super::*;
 
+            fn test_boot_ch_windows_common(memory: &str, boot_wait_secs: u64) {
+                let mut disk = WindowsDiskConfig::new(WINDOWS_IMAGE_NAME.to_string());
+                let tmp_dir =
+                    TempDir::new().expect("Expect creating temporary directory to succeed");
+                prepare_windows_os_disk(&mut disk, &tmp_dir);
+
+                let clh_path = dirs::home_dir()
+                    .unwrap()
+                    .join("workloads")
+                    .join("cloud-hypervisor");
+                let mut c = Command::new(clh_path.to_str().unwrap());
+                c.args([
+                    "--cpus",
+                    "boot=2,kvm_hyperv=on",
+                    "--memory",
+                    memory,
+                    "--console",
+                    "off",
+                    "--serial",
+                    "tty",
+                    "--kernel",
+                    &format!("target/{TARGET_TRIPLE}/release/hypervisor-fw"),
+                    "--disk",
+                    &format!("path={}", disk.osdisk_path),
+                    "--net",
+                    "tap=",
+                ]);
+
+                let stdout = fs::File::create(tmp_dir.path().join("stdout")).unwrap();
+                let stderr = fs::File::create(tmp_dir.path().join("stderr")).unwrap();
+
+                eprintln!("Spawning: {:?}", c);
+                let mut child = c
+                    .stdout(Stdio::from(stdout))
+                    .stderr(Stdio::from(stderr))
+                    .spawn()
+                    .expect("Expect launching Cloud Hypervisor to succeed");
+
+                thread::sleep(std::time::Duration::from_secs(boot_wait_secs));
+                let r = std::panic::catch_unwind(|| {
+                    let auth = windows_auth();
+                    ssh_command_with_auth("192.168.249.2", "shutdown /s", &auth)
+                        .expect("Expect SSH command to work");
+                });
+
+                child.kill().unwrap();
+                let output = child.wait_with_output().unwrap();
+
+                handle_child_output(&tmp_dir, r, &output);
+            }
+
             #[test]
             #[ignore] // Windows guest test on QEMU is not supported yet.
             #[cfg(not(feature = "coreboot"))]
@@ -701,54 +752,15 @@ mod tests {
             #[test]
             #[cfg(not(feature = "coreboot"))]
             fn test_boot_ch_windows() {
-                let mut disk = WindowsDiskConfig::new(WINDOWS_IMAGE_NAME.to_string());
-                let tmp_dir =
-                    TempDir::new().expect("Expect creating temporary directory to succeed");
-                prepare_windows_os_disk(&mut disk, &tmp_dir);
+                test_boot_ch_windows_common("size=4G", 60);
+            }
 
-                let clh_path = dirs::home_dir()
-                    .unwrap()
-                    .join("workloads")
-                    .join("cloud-hypervisor");
-                let mut c = Command::new(clh_path.to_str().unwrap());
-                c.args([
-                    "--cpus",
-                    "boot=2,kvm_hyperv=on",
-                    "--memory",
-                    "size=4G",
-                    "--console",
-                    "off",
-                    "--serial",
-                    "tty",
-                    "--kernel",
-                    &format!("target/{TARGET_TRIPLE}/release/hypervisor-fw"),
-                    "--disk",
-                    &format!("path={}", disk.osdisk_path),
-                    "--net",
-                    "tap=",
-                ]);
-
-                let stdout = fs::File::create(tmp_dir.path().join("stdout")).unwrap();
-                let stderr = fs::File::create(tmp_dir.path().join("stderr")).unwrap();
-
-                eprintln!("Spawning: {:?}", c);
-                let mut child = c
-                    .stdout(Stdio::from(stdout))
-                    .stderr(Stdio::from(stderr))
-                    .spawn()
-                    .expect("Expect launching Cloud Hypervisor to succeed");
-
-                thread::sleep(std::time::Duration::from_secs(60));
-                let r = std::panic::catch_unwind(|| {
-                    let auth = windows_auth();
-                    ssh_command_with_auth("192.168.249.2", "shutdown /s", &auth)
-                        .expect("Expect SSH command to work");
-                });
-
-                child.kill().unwrap();
-                let output = child.wait_with_output().unwrap();
-
-                handle_child_output(&tmp_dir, r, &output);
+            #[test]
+            #[cfg(not(feature = "coreboot"))]
+            fn test_boot_ch_windows_gt_32g() {
+                // Keep the guest only slightly above the 32 GiB threshold so the
+                // regression path is exercised without demanding a full 64 GiB host.
+                test_boot_ch_windows_common("size=32769M", 90);
             }
         }
     }
