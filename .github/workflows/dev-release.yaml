@@ -1,0 +1,89 @@
+name: Build and Release Dev
+
+on:
+  push:
+    branches: [dev]
+
+permissions:
+  contents: write
+
+concurrency:
+  group: dev-release
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Install pinned Rust toolchain
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: nightly-2025-06-05
+          components: rust-src
+
+      - name: Show toolchain
+        run: |
+          rustc --version --verbose
+          cargo --version --verbose
+
+      - name: Build firmware (release)
+        run: |
+          cargo build --release \
+            --target x86_64-unknown-none.json \
+            -Zbuild-std=core \
+            -Zbuild-std-features=compiler-builtins-mem
+
+      - name: Generate checksum and build metadata
+        run: |
+          artifact=target/x86_64-unknown-none/release/hypervisor-fw
+          sha256sum "$artifact" > "${artifact}.sha256"
+          cat > target/x86_64-unknown-none/release/build-info.json <<EOF
+          {
+            "ref": "${GITHUB_REF_NAME}",
+            "commit": "${GITHUB_SHA}",
+            "run_id": "${GITHUB_RUN_ID}",
+            "run_attempt": "${GITHUB_RUN_ATTEMPT}",
+            "workflow": "${GITHUB_WORKFLOW}",
+            "rustc": "$(rustc --version --verbose | tr '\n' '; ' | sed 's/; $//')",
+            "cargo": "$(cargo --version --verbose | tr '\n' '; ' | sed 's/; $//')"
+          }
+          EOF
+
+      - name: Upload binary as artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: hypervisor-fw
+          path: |
+            target/x86_64-unknown-none/release/hypervisor-fw
+            target/x86_64-unknown-none/release/hypervisor-fw.sha256
+            target/x86_64-unknown-none/release/build-info.json
+
+      - name: Create dev release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: dev
+          target_commitish: ${{ github.sha }}
+          name: Dev Build
+          body: |
+            Branch: `${{ github.ref_name }}`
+            Commit: `${{ github.sha }}`
+            Workflow Run: `${{ github.run_id }}`
+          files: |
+            target/x86_64-unknown-none/release/hypervisor-fw
+            target/x86_64-unknown-none/release/hypervisor-fw.sha256
+            target/x86_64-unknown-none/release/build-info.json
+          prerelease: true
+          make_latest: false
+          overwrite_files: true
+          fail_on_unmatched_files: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Move dev tag to current commit
+        run: |
+          git tag -f dev "${GITHUB_SHA}"
+          git push origin refs/tags/dev --force
